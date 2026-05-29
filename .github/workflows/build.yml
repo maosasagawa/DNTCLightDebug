@@ -1,0 +1,67 @@
+name: DNTC Light Debug Windows
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  build-windows-exe:
+    name: Build DNTC Light Debug EXE
+    runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Prepare CH347 driver files
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force drivers | Out-Null
+          $zip = Join-Path $env:RUNNER_TEMP 'CH341PAR.zip'
+          Invoke-WebRequest -Uri 'https://file.wch.cn/download/file?id=7' -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath $env:RUNNER_TEMP\CH341PAR -Force
+          $dll = Get-ChildItem -Path $env:RUNNER_TEMP\CH341PAR -Recurse -Filter 'CH347DLLA64.DLL' | Select-Object -First 1
+          $header = Get-ChildItem -Path $env:RUNNER_TEMP\CH341PAR -Recurse -Filter 'CH347DLL_EN.H' | Select-Object -First 1
+          if (-not $dll) { throw 'CH347DLLA64.DLL not found in WCH package' }
+          if (-not $header) { throw 'CH347DLL_EN.H not found in WCH package' }
+          Copy-Item $dll.FullName drivers\CH347DLLA64.DLL -Force
+          Copy-Item $header.FullName drivers\CH347DLL_EN.H -Force
+
+      - name: Build executable
+        run: python -m PyInstaller --noconfirm DNTCLightDebug.spec
+
+      - name: Stage delivery files
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force delivery | Out-Null
+          Copy-Item dist\DNTCLightDebug.exe delivery\DNTCLightDebug.exe -Force
+          Copy-Item DNTCLightDebug_User_Guide.md delivery\DNTCLightDebug_User_Guide.md -Force
+
+      - name: Package delivery zip
+        shell: pwsh
+        run: Compress-Archive -Path delivery\* -DestinationPath DNTCLightDebug-Windows-v1.1.zip -Force
+
+      - name: Upload release asset
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete dntc-light-debug-latest --cleanup-tag --yes 2>$null
+          gh release create dntc-light-debug-latest DNTCLightDebug-Windows-v1.1.zip `
+            --title "DNTC Light Debug Windows v1.1" `
+            --notes "Windows debug tool for DNTC light strips. Requires CH347T USB adapter." `
+            --target "${{ github.sha }}"
